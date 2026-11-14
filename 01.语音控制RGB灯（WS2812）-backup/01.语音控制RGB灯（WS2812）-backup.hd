@@ -1,0 +1,334 @@
+#include "asr.h"
+extern "C"{ void * __dso_handle = 0 ;}
+#include "setup.h"
+#include "HardwareSerial.h"
+#include "myLib/asr_ws2812.h"
+#include "myLib/asr_event.h"
+
+uint32_t snid;
+void ASR_CODE();
+
+// 语音配置区：speak / playid / ID 全部集中在程序最开头统一书写
+//{speak:程程-标准男童,vol:5,speed:10,platform:haohaodada}
+//{playid:10001,voice:欢迎使用语音小夜灯，请说方宝方宝唤醒我}
+//{playid:10002,voice:我先休息了，请说方宝方宝唤醒我}
+//{playid:10500,voice:白色光}
+//{playid:10501,voice:暖白色光}
+//{playid:10502,voice:红光}
+//{playid:10503,voice:绿光}
+//{playid:10504,voice:蓝光}
+//{playid:10505,voice:黄光}
+//{playid:10506,voice:紫光}
+//{playid:10507,voice:青色光}
+//{ID:0,keyword:"唤醒词",ASR:"方宝方宝",ASRTO:"我在"}
+//{ID:10250,keyword:"命令词",ASR:"最大音量",ASRTO:"音量调整到最大"}
+//{ID:10251,keyword:"命令词",ASR:"中等音量",ASRTO:"音量调整到中等"}
+//{ID:10252,keyword:"命令词",ASR:"最小音量",ASRTO:"音量调整到最小"}
+//{ID:10,keyword:"命令词",ASR:"打开灯光",ASRTO:"好的，灯光已打开"}
+//{ID:11,keyword:"命令词",ASR:"打开夜灯",ASRTO:"好的，夜灯已打开"}
+//{ID:12,keyword:"命令词",ASR:"开灯",ASRTO:"好的，灯已打开"}
+//{ID:13,keyword:"命令词",ASR:"关闭灯光",ASRTO:"好的，灯光已关闭"}
+//{ID:14,keyword:"命令词",ASR:"关闭夜灯",ASRTO:"好的，夜灯已关闭"}
+//{ID:15,keyword:"命令词",ASR:"关灯",ASRTO:"好的，灯已关闭"}
+//{ID:20,keyword:"命令词",ASR:"调亮一点",ASRTO:"好的，已经调亮"}
+//{ID:21,keyword:"命令词",ASR:"亮一点",ASRTO:"好的，已经调亮"}
+//{ID:22,keyword:"命令词",ASR:"调暗一点",ASRTO:"好的，已经调暗"}
+//{ID:23,keyword:"命令词",ASR:"暗一点",ASRTO:"好的，已经调暗"}
+//{ID:24,keyword:"命令词",ASR:"最大亮度",ASRTO:"好的，亮度已调到最大"}
+//{ID:25,keyword:"命令词",ASR:"最亮光",ASRTO:"好的，亮度已调到最大"}
+//{ID:26,keyword:"命令词",ASR:"最小亮度",ASRTO:"好的，亮度已调到最小"}
+//{ID:27,keyword:"命令词",ASR:"最暗光",ASRTO:"好的，亮度已调到最小"}
+//{ID:30,keyword:"命令词",ASR:"改变颜色",ASRTO:"好的"}
+//{ID:31,keyword:"命令词",ASR:"换颜色",ASRTO:"好的"}
+//{ID:32,keyword:"命令词",ASR:"变颜色",ASRTO:"好的"}
+//{ID:33,keyword:"命令词",ASR:"白色光",ASRTO:"好的，白光已打开"}
+//{ID:34,keyword:"命令词",ASR:"冷白光",ASRTO:"好的，冷白光已打开"}
+//{ID:35,keyword:"命令词",ASR:"暖色光",ASRTO:"好的，暖光已打开"}
+//{ID:36,keyword:"命令词",ASR:"暖黄色",ASRTO:"好的，暖黄光已打开"}
+//{ID:37,keyword:"命令词",ASR:"打开红光",ASRTO:"好的，红光已打开"}
+//{ID:38,keyword:"命令词",ASR:"打开绿光",ASRTO:"好的，绿光已打开"}
+//{ID:39,keyword:"命令词",ASR:"打开蓝光",ASRTO:"好的，蓝光已打开"}
+//{ID:40,keyword:"命令词",ASR:"打开黄光",ASRTO:"好的，黄光已打开"}
+//{ID:41,keyword:"命令词",ASR:"打开紫光",ASRTO:"好的，紫光已打开"}
+//{ID:50,keyword:"命令词",ASR:"打开彩虹灯",ASRTO:"好的，彩虹灯光已打开"}
+//{ID:51,keyword:"命令词",ASR:"打开呼吸灯",ASRTO:"好的，呼吸灯光已打开"}
+//{ID:52,keyword:"命令词",ASR:"打开流光溢彩灯",ASRTO:"好的，流光溢彩灯已打开"}
+//{ID:60,keyword:"命令词",ASR:"定时十五分钟",ASRTO:"好的，十五分钟后关闭灯光"}
+//{ID:61,keyword:"命令词",ASR:"定时三十分钟",ASRTO:"好的，三十分钟后关闭灯光"}
+//{ID:62,keyword:"命令词",ASR:"定时六十分钟",ASRTO:"好的，六十分钟后关闭灯光"}
+
+#define LED_PIN      13   // PB5
+#define LED_NUM      16   // 16 路灯环
+#define COLOR_NUM    8
+#define MODE_STATIC  0    // 静态单色
+#define MODE_RAINBOW 1    // 彩虹渐变
+#define MODE_BREATH  2    // 呼吸
+#define MODE_STREAM  3    // 流光溢彩
+
+// 灯环驱动对象：数据脚 PB5
+WS2812 ASR_WS2812_13(LED_PIN);
+
+// 灯的状态（语音回调与灯光线程共享，用 volatile 修饰）
+volatile uint8_t  lamp_on   = 0;      // 0 灭 1 亮
+volatile uint8_t  led_mode  = MODE_STATIC;
+volatile uint8_t  bright    = 60;     // 当前亮度 0~255
+volatile uint16_t timer_sec = 0;      // 定时剩余秒数，0 表示未定时
+volatile uint8_t  color_idx = 1;      // 当前颜色在调色板中的序号
+volatile uint8_t  cur_r = 255, cur_g = 180, cur_b = 80;   // 当前颜色（默认暖白）
+
+// 调色板：白、暖白、红、绿、蓝、黄、紫、青
+const uint8_t PALETTE[COLOR_NUM][3] = {
+  {255, 255, 255},
+  {255, 180,  80},
+  {255,   0,   0},
+  {  0, 255,   0},
+  {  0,   0, 255},
+  {255, 200,   0},
+  {160,   0, 255},
+  {  0, 255, 255}
+};
+
+// 按当前颜色与亮度刷新灯环（静态显示）
+void apply_static()
+{
+  ASR_WS2812_13.setBrightness(bright);
+  ASR_WS2812_13.pixel_set_all_color(cur_r, cur_g, cur_b);
+  ASR_WS2812_13.pixel_show();
+}
+
+// 熄灭灯环
+void led_clear()
+{
+  ASR_WS2812_13.setBrightness(bright);
+  ASR_WS2812_13.pixel_set_all_color(0, 0, 0);
+  ASR_WS2812_13.pixel_show();
+}
+
+// 选中调色板中第 idx 种颜色并点亮
+void set_color_and_show(uint8_t idx)
+{
+  color_idx = idx;
+  cur_r = PALETTE[idx][0];
+  cur_g = PALETTE[idx][1];
+  cur_b = PALETTE[idx][2];
+  lamp_on  = 1;
+  led_mode = MODE_STATIC;
+  apply_static();
+}
+
+// 灯光效果线程：彩虹 / 呼吸 / 流光溢彩都在这里跑，严禁放到语音回调里
+void led_task()
+{
+  uint8_t phase   = 0;   // 彩虹色相偏移
+  uint8_t breathe = 0;   // 呼吸相位
+  uint8_t pos     = 0;   // 流光位置
+
+  while (1) {
+    if (!lamp_on) {
+      delay(50);
+      continue;
+    }
+
+    if (led_mode == MODE_RAINBOW) {
+      ASR_WS2812_13.setBrightness(bright);
+      for (uint8_t i = 0; i < LED_NUM; i++) {
+        ASR_WS2812_13.pixel_set_color(i, ASR_WS2812_13.wheel((uint8_t)(i * (256 / LED_NUM) + phase)));
+      }
+      ASR_WS2812_13.pixel_show();
+      phase += 4;
+      delay(30);
+    } else if (led_mode == MODE_BREATH) {
+      uint8_t k = (breathe < 128) ? (uint8_t)(breathe * 2) : (uint8_t)((255 - breathe) * 2);
+      uint16_t b = (uint16_t)bright * (k + 20) / 275;
+      if (b < 3) b = 3;
+      ASR_WS2812_13.setBrightness((uint8_t)b);
+      ASR_WS2812_13.pixel_set_all_color(cur_r, cur_g, cur_b);
+      ASR_WS2812_13.pixel_show();
+      breathe += 6;
+      delay(25);
+    } else if (led_mode == MODE_STREAM) {
+      ASR_WS2812_13.setBrightness(bright);
+      for (uint8_t i = 0; i < LED_NUM; i++) {
+        uint32_t c = ASR_WS2812_13.wheel((uint8_t)(i * (256 / LED_NUM) + phase));
+        uint8_t r = (uint8_t)(c >> 16);
+        uint8_t g = (uint8_t)(c >> 8);
+        uint8_t b = (uint8_t)c;
+        uint8_t d = (uint8_t)((i + LED_NUM - pos) % LED_NUM);   // 距亮点的位置
+        uint8_t k = (d < 6) ? (uint8_t)(255 - d * 38) : 30;     // 拖尾衰减
+        ASR_WS2812_13.pixel_set_color(i,
+                                      (uint8_t)((uint16_t)r * k / 255),
+                                      (uint8_t)((uint16_t)g * k / 255),
+                                      (uint8_t)((uint16_t)b * k / 255));
+      }
+      ASR_WS2812_13.pixel_show();
+      pos = (uint8_t)((pos + 1) % LED_NUM);
+      if (pos == 0) phase += 4;
+      delay(60);
+    } else {
+      delay(50);   // 静态模式无需重复刷新
+    }
+  }
+  vTaskDelete(NULL);
+}
+
+// 定时关闭线程：每秒减一，到 0 自动关灯（不播报语音）
+void timer_task()
+{
+  while (1) {
+    delay(1000);
+    if (timer_sec > 0) {
+      timer_sec = timer_sec - 1;
+      if (timer_sec == 0) {
+        lamp_on = 0;
+        led_clear();
+      }
+    }
+  }
+  vTaskDelete(NULL);
+}
+
+// 语音识别成功钩子函数：只做状态分发，动作交给灯光线程
+void ASR_CODE(){
+  set_state_enter_wakeup(15000);   // 唤醒后 15 秒无命令则休眠
+
+  switch (snid) {
+   // 唤醒词，回复由 ASRTO 自动播报
+   case 0:
+    break;
+
+   // 开灯
+   case 10:
+   case 11:
+   case 12:
+    lamp_on  = 1;
+    led_mode = MODE_STATIC;
+    if (bright < 10) bright = 60;
+    apply_static();
+    break;
+
+   // 关灯（同时取消定时，避免关灯后又播报定时提示）
+   case 13:
+   case 14:
+   case 15:
+    lamp_on   = 0;
+    led_mode  = MODE_STATIC;
+    timer_sec = 0;
+    led_clear();
+    break;
+
+   // 调亮
+   case 20:
+   case 21:
+    lamp_on = 1;
+    bright  = (bright > 215) ? 255 : (uint8_t)(bright + 40);
+    if (led_mode == MODE_STATIC) apply_static();
+    break;
+
+   // 调暗
+   case 22:
+   case 23:
+    lamp_on = 1;
+    bright  = (bright < 50) ? 10 : (uint8_t)(bright - 30);
+    if (led_mode == MODE_STATIC) apply_static();
+    break;
+
+   // 最亮
+   case 24:
+   case 25:
+    lamp_on = 1;
+    bright  = 255;
+    if (led_mode == MODE_STATIC) apply_static();
+    break;
+
+   // 最暗
+   case 26:
+   case 27:
+    lamp_on = 1;
+    bright  = 10;
+    if (led_mode == MODE_STATIC) apply_static();
+    break;
+
+   // 循环切换颜色，并播报当前颜色名
+   case 30:
+   case 31:
+   case 32:
+    color_idx = (uint8_t)((color_idx + 1) % COLOR_NUM);
+    lamp_on   = 1;
+    led_mode  = MODE_STATIC;
+    cur_r = PALETTE[color_idx][0];
+    cur_g = PALETTE[color_idx][1];
+    cur_b = PALETTE[color_idx][2];
+    apply_static();
+    play_audio(10500 + color_idx);
+    break;
+
+   // 指定颜色
+   case 33:
+   case 34:
+    set_color_and_show(0);          // 白色光 / 冷白光
+    break;
+   case 35:
+   case 36:
+    set_color_and_show(1);          // 暖色光 / 暖黄色
+    break;
+   case 37:
+    set_color_and_show(2);          // 红光
+    break;
+   case 38:
+    set_color_and_show(3);          // 绿光
+    break;
+   case 39:
+    set_color_and_show(4);          // 蓝光
+    break;
+   case 40:
+    set_color_and_show(5);          // 黄光
+    break;
+   case 41:
+    set_color_and_show(6);          // 紫光
+    break;
+
+   // 动态效果
+   case 50:
+    lamp_on  = 1;
+    led_mode = MODE_RAINBOW;
+    break;
+   case 51:
+    lamp_on  = 1;
+    led_mode = MODE_BREATH;
+    break;
+   case 52:
+    lamp_on  = 1;
+    led_mode = MODE_STREAM;
+    break;
+
+   // 定时关闭
+   case 60:
+    timer_sec = 15 * 60;
+    break;
+   case 61:
+    timer_sec = 30 * 60;
+    break;
+   case 62:
+    timer_sec = 60 * 60;
+    break;
+  }
+}
+
+void hardware_init(){
+  vol_set(5);                       // 播报音量 1~7，默认 5
+  ASR_WS2812_13.pixel_init(LED_NUM);
+  led_clear();                      // 上电先熄灯
+  xTaskCreate(led_task,   "led_task",   256, NULL, 3, NULL);
+  xTaskCreate(timer_task, "timer_task", 256, NULL, 2, NULL);
+  vTaskDelete(NULL);
+}
+
+void setup(){
+  setPinFun(LED_PIN, FIRST_FUNCTION);   // PB5 复用为普通 GPIO
+  pinMode(LED_PIN, output);
+}
+
+
+
+
+/** edittype="asr_procode" */
